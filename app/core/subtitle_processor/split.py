@@ -956,6 +956,11 @@ class SubtitleSplitter:
                 start_seg_index = best_pos
                 end_seg_index = best_pos + best_window_size - 1
 
+                # 匹配窗口可能从 asr_index 之后开始，中间这些分段属于上一句：
+                # 先原样输出，否则它们会从字幕里凭空消失
+                if start_seg_index > asr_index:
+                    new_segments.extend(segments[asr_index:start_seg_index])
+
                 segs_to_merge = segments[start_seg_index : end_seg_index + 1]
 
                 # 按照时间切分避免合并跨度大的

@@ -160,6 +160,21 @@ class Config(QConfig):
         OptionsValidator(WhisperModelEnum),
         EnumSerializer(WhisperModelEnum),
     )
+    # AMD 显卡加速：auto 优先独显，gpu 强制显卡，cpu 禁用显卡
+    whisper_cpp_device = OptionsConfigItem(
+        "WhisperCpp",
+        "Device",
+        "auto",
+        OptionsValidator(["auto", "gpu", "cpu"]),
+    )
+    whisper_cpp_gpu_index = ConfigItem("WhisperCpp", "GpuIndex", -1)
+    whisper_cpp_program = ConfigItem("WhisperCpp", "Program", "")
+    whisper_cpp_model_path = ConfigItem("WhisperCpp", "ModelPath", "")
+    whisper_cpp_model_dir = ConfigItem("WhisperCpp", "ModelDir", "")
+    # 一个视频里中/英/日/俄混说：按静音分段，每段单独检测语言
+    whisper_cpp_multilingual = ConfigItem(
+        "WhisperCpp", "Multilingual", True, BoolValidator()
+    )
 
     # ------------------- Faster Whisper 配置 -------------------
     faster_whisper_program = ConfigItem(
@@ -241,6 +256,13 @@ class Config(QConfig):
     # ------------------- 字幕合成配置 -------------------
     soft_subtitle = ConfigItem("Video", "SoftSubtitle", False, BoolValidator())
     need_video = ConfigItem("Video", "NeedVideo", True, BoolValidator())
+    # auto = 有显卡时用 AMF/NVENC/QSV 硬件编码；cpu = 始终 libx264
+    video_encoder = OptionsConfigItem(
+        "Video",
+        "VideoEncoder",
+        "auto",
+        OptionsValidator(["auto", "cpu"]),
+    )
 
     # ------------------- 字幕样式配置 -------------------
     subtitle_style_name = ConfigItem("SubtitleStyle", "StyleName", "default")

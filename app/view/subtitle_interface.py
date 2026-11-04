@@ -750,21 +750,22 @@ class SubtitleInterface(QWidget):
 
         # 获取所有需要保留的键
         keys = list(data.keys())
-        preserved_keys = keys[: rows[0]] + keys[rows[-1] + 1 :]
-
-        # 创建新的数据字典
+        # 只删除真正选中的行：原来按 rows[0]~rows[-1] 取区间，
+        # Ctrl 多选不连续行时会连带删掉中间没选中的字幕
+        selected = set(sorted(rows))
         new_data = {}
-        for i, key in enumerate(preserved_keys):
-            if i == rows[0]:
-                new_key = f"{len(new_data)+1}"
-                new_data[new_key] = merged_item
-            new_key = f"{len(new_data)+1}"
-            new_data[new_key] = data[key]
+        inserted = False
+        for index, key in enumerate(keys):
+            if index in selected:
+                if not inserted:
+                    new_data[str(len(new_data) + 1)] = merged_item
+                    inserted = True
+                continue
+            new_data[str(len(new_data) + 1)] = data[key]
 
-        # 如果合并的是最后几行，需要确保合并项被添加
-        if rows[0] >= len(preserved_keys):
-            new_key = f"{len(new_data)+1}"
-            new_data[new_key] = merged_item
+        # 如果合并的是最后几行，确保合并项被添加
+        if not inserted:
+            new_data[str(len(new_data) + 1)] = merged_item
 
         # 更新模型数据
         self.model.update_all(new_data)

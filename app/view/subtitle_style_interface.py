@@ -22,6 +22,9 @@ from qfluentwidgets import (
 
 from app.common.config import cfg
 from app.common.signal_bus import signalBus
+from app.core.utils.logger import setup_logger
+
+logger = setup_logger("subtitle_style")
 from app.components.MySettingCard import (
     ColorSettingCard,
     ComboBoxSettingCard,
@@ -619,6 +622,28 @@ class SubtitleStyleInterface(QWidget):
             style_content = f.read()
 
         # 解析样式内容
+        # 用户手工放入/旧版本导出的样式可能字段不足：先在槽函数外校验，
+        # 否则 IndexError/ValueError 会在 Qt 槽里直接让整个进程退出
+        for style_line in style_content.split("\n"):
+            if not (
+                style_line.startswith("Style: Default")
+                or style_line.startswith("Style: Secondary")
+            ):
+                continue
+            fields = style_line.split(",")
+            try:
+                if len(fields) < 22:
+                    raise ValueError(f"字段数 {len(fields)} < 22")
+                int(fields[2])
+                float(fields[13])
+                float(fields[16])
+                if style_line.startswith("Style: Default"):
+                    int(fields[21])
+            except ValueError as exc:
+                logger.warning("样式文件 %s 格式异常(%s)，已跳过加载", style_path, exc)
+                self._loading_style = False
+                return
+
         for line in style_content.split("\n"):
             if line.startswith("Style: Default"):
                 # 解析主字幕样式

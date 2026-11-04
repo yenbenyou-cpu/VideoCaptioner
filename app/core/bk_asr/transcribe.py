@@ -51,6 +51,13 @@ def transcribe(audio_path: str, config: TranscribeConfig, callback=None) -> ASRD
             {
                 "language": config.transcribe_language,
                 "whisper_model": config.whisper_model,
+                # AMD 显卡加速：引擎 / 设备 / 显卡序号 / 模型文件
+                "program": config.whisper_cpp_program or None,
+                "device": config.whisper_cpp_device,
+                "gpu_index": config.whisper_cpp_gpu_index,
+                "model_dir": config.whisper_cpp_model_dir or None,
+                "model_path": config.whisper_cpp_model_path or None,
+                "multilingual": config.whisper_cpp_multilingual,
             }
         )
     elif config.transcribe_model == TranscribeModelEnum.WHISPER_API:

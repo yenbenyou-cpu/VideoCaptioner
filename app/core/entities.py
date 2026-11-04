@@ -352,6 +352,8 @@ class WhisperModelEnum(Enum):
     MEDIUM = "medium"
     LARGE_V1 = "large-v1"
     LARGE_V2 = "large-v2"
+    LARGE_V3 = "large-v3"
+    LARGE_V3_TURBO = "large-v3-turbo"
 
 
 class FasterWhisperModelEnum(Enum):
@@ -507,6 +509,13 @@ class TranscribeConfig:
     need_word_time_stamp: bool = True
     # Whisper Cpp 配置
     whisper_model: Optional[WhisperModelEnum] = None
+    whisper_cpp_program: Optional[str] = None
+    whisper_cpp_device: str = "auto"
+    whisper_cpp_gpu_index: int = -1
+    whisper_cpp_model_dir: Optional[str] = None
+    whisper_cpp_model_path: Optional[str] = None
+    # 多语言混合视频：按静音分段、逐段检测语言（忽略 transcribe_language）
+    whisper_cpp_multilingual: bool = False
     # Whisper API 配置
     whisper_api_key: Optional[str] = None
     whisper_api_base: Optional[str] = None
@@ -559,6 +568,8 @@ class SynthesisConfig:
 
     need_video: bool = True
     soft_subtitle: bool = True
+    # auto = 有显卡时用硬件编码（AMF/NVENC/QSV）；cpu = 始终 libx264
+    video_encoder: str = "auto"
 
 
 @dataclass

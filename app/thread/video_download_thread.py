@@ -193,19 +193,21 @@ class VideoDownloadThread(QThread):
                     )
                     os.remove(file_path)
                     if subtitle_download_link:
-                        response = requests.get(subtitle_download_link)
+                        # 没有超时的 requests.get 会让下载线程永久挂起
+                        response = requests.get(subtitle_download_link, timeout=30)
                         file_path = (
                             video_work_dir
                             / "subtitle"
                             / f"【下载字幕】{subtitle_language}.vtt"
                         )
                         if res := response.text:
+                            file_path.parent.mkdir(parents=True, exist_ok=True)
                             with open(file_path, "w", encoding="utf-8") as f:
                                 f.write(res)
-                            subtitle_file_path = file_path
+                            subtitle_file_path = str(file_path)
                 else:
-                    subtitle_file_path = file_path
-                break
+                    subtitle_file_path = str(file_path)
+                continue
 
             # 获取缩略图文件路径
             thumbnail_file_path = None

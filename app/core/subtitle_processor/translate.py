@@ -111,14 +111,17 @@ class BaseTranslator(ABC):
 
     def _parallel_translate(self, chunks: List[Dict[str, str]]) -> Dict[str, str]:
         """并行翻译所有块"""
-        futures = []
+        futures = {}
         translated_dict = {}
 
         for chunk in chunks:
             future = self.executor.submit(self._safe_translate_chunk, chunk)
-            futures.append(future)
+            futures[future] = chunk
 
         for future in as_completed(futures):
+            # 必须用 future 回查自己的块：as_completed 的顺序是乱序的，
+            # 之前用循环残留的 chunk 会把最后一块的译文覆盖成原文。
+            chunk = futures[future]
             if not self.is_running:
                 logger.info("翻译器已停止运行，退出翻译")
                 break

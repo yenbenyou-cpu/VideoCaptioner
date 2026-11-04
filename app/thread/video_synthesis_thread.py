@@ -46,6 +46,7 @@ class VideoSynthesisThread(QThread):
                 output_path,
                 soft_subtitle=soft_subtitle,
                 progress_callback=self.progress_callback,
+                prefer=self.task.synthesis_config.video_encoder,
             )
 
             self.progress.emit(100, self.tr("合成完成"))

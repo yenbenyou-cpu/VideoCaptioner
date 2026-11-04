@@ -100,16 +100,17 @@ class SubtitleOptimizer:
 
     def _parallel_optimize(self, chunks: List[Dict[str, str]]) -> Dict[str, str]:
         """并行优化所有块"""
-        futures = []
+        futures = {}
         optimized_dict = {}
 
         for chunk in chunks:
             if not self.executor:
                 raise ValueError("线程池未初始化")
             future = self.executor.submit(self._safe_optimize_chunk, chunk)
-            futures.append(future)
+            futures[future] = chunk
 
         for future in as_completed(futures):
+            chunk = futures[future]
             if not self.is_running:
                 logger.info("优化器已停止运行，退出优化")
                 break

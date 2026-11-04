@@ -1,3 +1,4 @@
+import hashlib
 import os
 import platform
 import shutil
@@ -26,7 +27,12 @@ class FileDownloadThread(QThread):
             # 创建缓存下载目录
             temp_dir = CACHE_PATH / "aria2c_download_cache"
             temp_dir.mkdir(parents=True, exist_ok=True)
-            temp_file = temp_dir / os.path.basename(self.save_path)
+            # 临时文件名带 url+目标路径的短哈希：
+            # 不同模型即使同名也不会共用半成品，同一 URL 重试时仍可断点续传
+            digest = hashlib.md5(
+                f"{self.url}|{self.save_path}".encode("utf-8")
+            ).hexdigest()[:10]
+            temp_file = temp_dir / f"{digest}_{os.path.basename(self.save_path)}"
             
             # 检查是否存在未完成的下载文件
             if temp_file.exists():
@@ -50,12 +56,14 @@ class FileDownloadThread(QThread):
                 self.url
             ]
             
-            # 根据操作系统设置不同的 subprocess 参数
+            # stderr 必须合并进 stdout：只读 stdout 而 stderr 写满管道缓冲区时，
+            # aria2c 会阻塞在写日志上，下载线程就永远卡住
             subprocess_args = {
                 'stdout': subprocess.PIPE,
-                'stderr': subprocess.PIPE,
-                'universal_newlines': True,
-                'encoding': 'utf-8'
+                'stderr': subprocess.STDOUT,
+                'text': True,
+                'encoding': 'utf-8',
+                'errors': 'replace',
             }
             
             # 仅在 Windows 系统上添加 CREATE_NO_WINDOW 标志
@@ -69,12 +77,13 @@ class FileDownloadThread(QThread):
                 **subprocess_args
             )
             
-            while True:
-                if self.process.poll() is not None:
-                    break
-                    
-                line = self.process.stdout.readline()
-                
+            tail = []
+            for line in iter(self.process.stdout.readline, ""):
+                if line:
+                    tail.append(line.rstrip())
+                    if len(tail) > 30:
+                        tail.pop(0)
+
                 if '[#' in line and ']' in line:
                     try:
                         # 解析类似 "[#40ca1b 2.4MiB/74MiB(3%) CN:2 DL:3.9MiB ETA:18s]" 的格式
@@ -90,16 +99,17 @@ class FileDownloadThread(QThread):
                             eta = line.split("ETA:")[1].split(']')[0]
                         status_msg = f"{self.tr('速度')}: {speed}/s, {self.tr('剩余时间')}: {eta}"
                         self.progress.emit(percent, status_msg)
-                    except Exception as e:
+                    except Exception:
                         pass
-                        
+
+            self.process.wait()
             if self.process.returncode == 0:
                 # 下载完成后移动文件到目标位置
-                os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
+                os.makedirs(os.path.dirname(self.save_path) or ".", exist_ok=True)
                 shutil.move(str(temp_file), self.save_path)
                 self.finished.emit()
             else:
-                error = self.process.stderr.read()
+                error = "\n".join(tail[-10:])
                 logger.error("下载失败: %s", error)
                 self.error.emit(f"{self.tr('下载失败')}: {error}")
                 

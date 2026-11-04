@@ -8,6 +8,8 @@ from typing import Dict, Literal, Optional
 
 from ..utils.logger import setup_logger
 from ..utils.ass_auto_wrap import auto_wrap_ass_file
+from .ffmpeg_utils import run_ffmpeg_command
+from .video_encoder import select_encoder, software_encoder
 
 logger = setup_logger("video_utils")
 
@@ -119,107 +121,57 @@ def add_subtitles(
     vcodec: str = "libx264",
     soft_subtitle: bool = False,
     progress_callback: callable = None,
+    prefer: str = "auto",
 ) -> None:
     assert Path(input_file).is_file(), "输入文件不存在"
     assert Path(subtitle_file).is_file(), "字幕文件不存在"
 
     # 移动到临时文件  Fix: 路径错误
+    # 每次合成都用独立目录：固定 temp_subtitle.ass 在批量任务和手动任务
+    # 同时运行时会互相覆盖，导致烧进错误的字幕。
     suffix = Path(subtitle_file).suffix.lower()
-    temp_dir = Path(tempfile.gettempdir()) / "VideoCaptioner"
-    temp_dir.mkdir(exist_ok=True)
-    temp_subtitle = temp_dir / f"temp_subtitle.{suffix}"
-    shutil.copy2(subtitle_file, temp_subtitle)
-    subtitle_file = str(temp_subtitle)
+    temp_root = Path(tempfile.gettempdir()) / "VideoCaptioner"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix="subtitle-", dir=str(temp_root)))
+    try:
+        temp_subtitle = temp_dir / f"temp_subtitle{suffix}"
+        shutil.copy2(subtitle_file, temp_subtitle)
+        subtitle_file = str(temp_subtitle)
 
-    # video_info = get_video_info(input_file)
-    if suffix == ".ass":
-        subtitle_file = auto_wrap_ass_file(
-            subtitle_file,
-            # video_width=video_info["width"],
-            # video_height=video_info["height"],
-        )
+        # video_info = get_video_info(input_file)
+        if suffix == ".ass":
+            subtitle_file = auto_wrap_ass_file(
+                subtitle_file,
+                # video_width=video_info["width"],
+                # video_height=video_info["height"],
+            )
 
-    # 如果是WebM格式，强制使用硬字幕
-    if Path(output).suffix.lower() == ".webm":
-
-        soft_subtitle = False
-        logger.info("WebM格式视频，强制使用硬字幕")
-
-    if soft_subtitle:
-        # 添加软字幕
-        cmd = [
-            "ffmpeg",
-            "-i",
-            input_file,
-            "-i",
-            subtitle_file,
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-c:s",
-            "mov_text",
-            output,
-            "-y",
-        ]
-        logger.info(f"添加软字幕执行命令: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=(
-                subprocess.CREATE_NO_WINDOW
-                if hasattr(subprocess, "CREATE_NO_WINDOW")
-                else 0
-            ),
-        )
-    else:
-        logger.info("使用硬字幕")
-        subtitle_file = Path(subtitle_file).as_posix().replace(":", r"\:")
-        # 根据输出文件后缀决定vf参数
-        if Path(output).suffix.lower() == ".ass":
-            vf = f"ass='{subtitle_file}'"
-        else:
-            # 其他格式使用默认的vf参数
-            vf = f"subtitles='{subtitle_file}'"
-
+        # 如果是WebM格式，强制使用硬字幕
         if Path(output).suffix.lower() == ".webm":
-            vcodec = "libvpx-vp9"
-            logger.info("WebM格式视频，使用libvpx-vp9编码器")
+            soft_subtitle = False
+            logger.info("WebM格式视频，强制使用硬字幕")
 
-        # 检查CUDA是否可用
-        use_cuda = check_cuda_available()
-        cmd = ["ffmpeg"]
-        if use_cuda:
-            logger.info("使用CUDA加速")
-            cmd.extend(["-hwaccel", "cuda"])
-        cmd.extend(
-            [
+        if soft_subtitle:
+            # 添加软字幕
+            cmd = [
+                "ffmpeg",
                 "-i",
                 input_file,
-                "-acodec",
+                "-i",
+                subtitle_file,
+                "-c:v",
                 "copy",
-                "-vcodec",
-                vcodec,
-                "-preset",
-                quality,
-                "-vf",
-                vf,
-                "-y",  # 覆盖输出文件
+                "-c:a",
+                "copy",
+                "-c:s",
+                "mov_text",
                 output,
+                "-y",
             ]
-        )
-
-        cmd_str = subprocess.list2cmdline(cmd)
-        logger.info(f"添加硬字幕执行命令: {cmd_str}")
-
-        try:
-            process = subprocess.Popen(
+            logger.info(f"添加软字幕执行命令: {' '.join(cmd)}")
+            result = subprocess.run(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -229,59 +181,61 @@ def add_subtitles(
                     else 0
                 ),
             )
-
-            # 实时读取输出并调用回调函数
-            total_duration = None
-            current_time = 0
-
-            while True:
-                output_line = process.stderr.readline()
-                if not output_line or (process.poll() is not None):
-                    break
-                if not progress_callback:
-                    continue
-
-                if total_duration is None:
-                    duration_match = re.search(
-                        r"Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})", output_line
-                    )
-                    if duration_match:
-                        h, m, s = map(float, duration_match.groups())
-                        total_duration = h * 3600 + m * 60 + s
-                        logger.info(f"视频总时长: {total_duration}秒")
-
-                # 解析当前处理时间
-                time_match = re.search(
-                    r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})", output_line
+            # 之前不检查返回值：封装失败也会被当成「合成完成」，输出文件根本不存在
+            if result.returncode != 0 or not Path(output).is_file():
+                logger.error("添加软字幕失败: %s", (result.stderr or "")[-800:])
+                raise RuntimeError(
+                    f"添加软字幕失败 (exit code {result.returncode})"
                 )
-                if time_match:
-                    h, m, s = map(float, time_match.groups())
-                    current_time = h * 3600 + m * 60 + s
+        else:
+            logger.info("使用硬字幕")
+            subtitle_file = Path(subtitle_file).as_posix().replace(":", r"\:")
+            # 根据输出文件后缀决定vf参数
+            if Path(output).suffix.lower() == ".ass":
+                vf = f"ass='{subtitle_file}'"
+            else:
+                # 其他格式使用默认的vf参数
+                vf = f"subtitles='{subtitle_file}'"
 
-                # 计算进度百分比
-                if total_duration:
-                    progress = (current_time / total_duration) * 100
-                    progress_callback(f"{round(progress)}", "正在合成")
+            if Path(output).suffix.lower() == ".webm":
+                vcodec = "libvpx-vp9"
+                logger.info("WebM格式视频，使用libvpx-vp9编码器")
 
-            if progress_callback:
-                progress_callback("100", "合成完成")
-            # 检查进程的返回码
-            return_code = process.wait()
-            if return_code != 0:
-                error_info = process.stderr.read()
-                logger.error(f"视频合成失败， {error_info}")
-                raise Exception(return_code)
-            logger.info("视频合成完成")
+            # 选择编码器：有可用显卡时用 AMF/NVENC/QSV，否则 libx264
+            choice = select_encoder(
+                prefer=prefer,
+                preset=quality,
+                output_suffix=Path(output).suffix,
+            )
 
-        except Exception as e:
-            logger.exception(f"关闭 FFmpeg: {str(e)}")
-            if process and process.poll() is None:  # 如果进程还在运行
-                process.kill()  # 如果进程没有及时终止，强制结束它
-            raise
-        finally:
-            # 删除临时文件
-            if temp_subtitle.exists():
-                temp_subtitle.unlink()
+            def _build_command(encoder):
+                return [
+                    "ffmpeg",
+                    "-i",
+                    input_file,
+                    "-acodec",
+                    "copy",
+                    *encoder.args,
+                    "-vf",
+                    vf,
+                    "-y",  # 覆盖输出文件
+                    output,
+                ]
+
+            try:
+                run_ffmpeg_command(_build_command(choice), progress_callback)
+            except Exception:
+                if not choice.is_hardware:
+                    raise
+                logger.warning("硬件编码 %s 失败，回退 libx264", choice.name)
+                if Path(output).exists():
+                    Path(output).unlink()
+                run_ffmpeg_command(
+                    _build_command(software_encoder(quality)), progress_callback
+                )
+    finally:
+        # 无论成功失败都清理临时文件
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def get_video_info(file_path: str) -> Optional[Dict]:

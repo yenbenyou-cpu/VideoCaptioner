@@ -148,6 +148,17 @@ class SettingInterface(ScrollArea):
             cfg.soft_subtitle,
             self.subtitleGroup,
         )
+        self.videoEncoderCard = ComboBoxSettingCard(
+            cfg.video_encoder,
+            FIF.IOT,
+            self.tr("编码加速"),
+            self.tr(
+                "auto：检测到 AMD/NVIDIA/Intel 显卡时用硬件编码（AMF/NVENC/QSV）；"
+                "cpu：始终用 libx264 软件编码"
+            ),
+            texts=["auto", "cpu"],
+            parent=self.subtitleGroup,
+        )
 
         # 保存配置卡片
         self.savePathCard = PushSettingCard(
@@ -229,6 +240,7 @@ class SettingInterface(ScrollArea):
         self.subtitleGroup.addSettingCard(self.subtitleLayoutCard)
         self.subtitleGroup.addSettingCard(self.needVideoCard)
         self.subtitleGroup.addSettingCard(self.softSubtitleCard)
+        self.subtitleGroup.addSettingCard(self.videoEncoderCard)
 
         self.saveGroup.addSettingCard(self.savePathCard)
 

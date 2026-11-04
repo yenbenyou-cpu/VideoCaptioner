@@ -14,6 +14,7 @@ from app.core.entities import (
     SynthesisConfig,
     SynthesisTask,
     TranscribeConfig,
+    TranscribeModelEnum,
     TranscribeTask,
     TranscriptAndSubtitleTask,
 )
@@ -49,13 +50,19 @@ class TaskFactory:
         file_name = Path(file_path).stem
 
         # 构建输出路径
+        language_label = cfg.transcribe_language.value.value
+        if (
+            cfg.transcribe_model.value == TranscribeModelEnum.WHISPER_CPP
+            and cfg.whisper_cpp_multilingual.value
+        ):
+            language_label = "多语言"
         if need_next_task:
             need_word_time_stamp = cfg.need_split.value
             output_path = str(
                 Path(cfg.work_dir.value)
                 / file_name
                 / "subtitle"
-                / f"【原始字幕】{file_name}-{cfg.transcribe_model.value.value}-{cfg.transcribe_language.value.value}.srt"
+                / f"【原始字幕】{file_name}-{cfg.transcribe_model.value.value}-{language_label}.srt"
             )
         else:
             need_word_time_stamp = False
@@ -68,6 +75,12 @@ class TaskFactory:
             need_word_time_stamp=need_word_time_stamp,
             # Whisper Cpp 配置
             whisper_model=cfg.whisper_model.value.value,
+            whisper_cpp_program=cfg.whisper_cpp_program.value or None,
+            whisper_cpp_device=cfg.whisper_cpp_device.value,
+            whisper_cpp_gpu_index=cfg.whisper_cpp_gpu_index.value,
+            whisper_cpp_model_dir=cfg.whisper_cpp_model_dir.value or None,
+            whisper_cpp_model_path=cfg.whisper_cpp_model_path.value or None,
+            whisper_cpp_multilingual=cfg.whisper_cpp_multilingual.value,
             # Whisper API 配置
             whisper_api_key=cfg.whisper_api_key.value,
             whisper_api_base=cfg.whisper_api_base.value,
@@ -220,6 +233,7 @@ class TaskFactory:
         config = SynthesisConfig(
             need_video=cfg.need_video.value,
             soft_subtitle=cfg.soft_subtitle.value,
+            video_encoder=cfg.video_encoder.value,
         )
 
         return SynthesisTask(

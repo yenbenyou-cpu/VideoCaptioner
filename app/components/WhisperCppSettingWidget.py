@@ -41,8 +41,12 @@ from qfluentwidgets import (
 from app.common.config import cfg
 from app.components.EditComboBoxSettingCard import EditComboBoxSettingCard
 from app.components.LineEditSettingCard import LineEditSettingCard
-from app.components.SpinBoxSettingCard import DoubleSpinBoxSettingCard
+from app.components.SpinBoxSettingCard import (
+    DoubleSpinBoxSettingCard,
+    SpinBoxSettingCard,
+)
 from app.config import BIN_PATH, CACHE_PATH, MODEL_PATH
+from app.core.bk_asr import backends
 from app.core.entities import (
     FasterWhisperModelEnum,
     TranscribeLanguageEnum,
@@ -109,28 +113,26 @@ WHISPER_CPP_MODELS = [
         "mirrorLink": "https://www.modelscope.cn/models/cjc1887415157/whisper.cpp/resolve/master/ggml-large-v2.bin",
         "sha": "0f4c8e34f21cf1a914c59d8b3ce882345ad349d6",
     },
-    # {
-    #     "label": "Large(v3)",
-    #     "value": "ggml-large-v3.bin",
-    #     "size": "3.09 GB",
-    #     "downloadLink": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
-    #     "mirrorLink": "https://www.modelscope.cn/models/cjc1887415157/whisper.cpp/resolve/master/ggml-large-v3.bin",
-    #     "sha": "ad82bf6a9043ceed055076d0fd39f5f186ff8062"
-    # },
-    # {
-    #     "label": "Distil Large(v3)",
-    #     "value": "ggml-distil-large-v3.bin",
-    #     "size": "1.52 GB",
-    #     "downloadLink": "https://huggingface.co/distil-whisper/distil-large-v3-ggml/resolve/main/ggml-distil-large-v3.bin?download=true",
-    #     "mirrorLink": "https://www.modelscope.cn/models/cjc1887415157/whisper.cpp/resolve/master/ggml-distil-large-v3.bin",
-    #     "sha": "5e61e98bdcf3b9a78516c59bf7d1a10d64cae67a"
-    # }
+    {
+        "label": "large-v3",
+        "value": "ggml-large-v3.bin",
+        "size": "3.09 GB",
+        "downloadLink": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+        "mirrorLink": "https://www.modelscope.cn/models/cjc1887415157/whisper.cpp/resolve/master/ggml-large-v3.bin",
+        "sha": "ad82bf6a9043ceed055076d0fd39f5f186ff8062",
+    },
+    # large-v3-turbo 官方只发布在 HuggingFace；本地有文件时可直接在“模型文件”里指定
 ]
 
 
 def check_whisper_cpp_exists():
-    """检查WhisperCpp程序是否存在"""
-    return True, []
+    """检查 whisper.cpp 程序是否存在，并返回可用后端"""
+    try:
+        engines = backends.list_engines()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("检测 whisper.cpp 失败: %s", exc)
+        return False, []
+    return bool(engines), [engine.display_backend for engine in engines]
 
 
 class DownloadDialog(MessageBoxBase):
@@ -447,10 +449,21 @@ class WhisperCppDownloadDialog(MessageBoxBase):
             if self.setting_widget:
                 try:
                     self.setting_widget.model_card.comboBox.clear()  # 清空现有选项
-                    # 重新添加所有已下载的模型
+                    # 重新添加所有已下载的模型（带 enum userData，避免设置值失效）
                     for m in WHISPER_CPP_MODELS:
                         if os.path.exists(os.path.join(MODEL_PATH, m["value"])):
-                            self.setting_widget.model_card.comboBox.addItem(m["label"])
+                            label = m["label"]
+                            model_enum = next(
+                                (
+                                    e
+                                    for e in WhisperModelEnum
+                                    if e.value == label.lower()
+                                ),
+                                None,
+                            )
+                            self.setting_widget.model_card.comboBox.addItem(
+                                label, userData=model_enum or label.lower()
+                            )
                 except Exception as e:
                     logger.error(f"更新模型选择失败: {e}")
 
@@ -528,8 +541,13 @@ class WhisperCppSettingWidget(QWidget):
         self.containerLayout = QVBoxLayout(self.container)
 
         self.setting_group = SettingCardGroup(
-            self.tr("Whisper CPP 设置（不稳定 🤔）"), self
+            self.tr("Whisper CPP 设置（A 卡可用 Vulkan 加速）"), self
         )
+
+        # 引擎探测结果
+        self.engine_label = BodyLabel("", self.container)
+        self.engine_label.setWordWrap(True)
+        self.engine_label.setStyleSheet("color: gray")
 
         # 模型选择
         self.model_card = ComboBoxSettingCard(
@@ -541,16 +559,8 @@ class WhisperCppSettingWidget(QWidget):
             self.setting_group,
         )
 
-        # 检查未下载的模型并从下拉框中移除
-        for i in range(self.model_card.comboBox.count() - 1, -1, -1):
-            model_text = self.model_card.comboBox.itemText(i).lower()
-            model_configs = {
-                model["label"].lower(): model for model in WHISPER_CPP_MODELS
-            }
-            model_config = model_configs.get(model_text)
-            if model_config and (MODEL_PATH / model_config["value"]).exists():
-                continue
-            self.model_card.comboBox.removeItem(i)
+        # 按磁盘上实际存在的 ggml-*.bin 构建下拉框
+        self._rebuild_model_choices()
 
         # 语言选择
         self.language_card = ComboBoxSettingCard(
@@ -559,6 +569,69 @@ class WhisperCppSettingWidget(QWidget):
             self.tr("源语言"),
             self.tr("音频的源语言"),
             [language.value for language in TranscribeLanguageEnum],
+            self.setting_group,
+        )
+
+        # 多语言混合识别（一个视频里中/英/日/俄混说）
+        self.multilingual_card = SwitchSettingCard(
+            FIF.LANGUAGE,
+            self.tr("多语言混合识别"),
+            self.tr(
+                "按静音分段、逐段自动检测语言，适合一个视频里同时出现中/英/日/俄。"
+                "开启后忽略上面的「源语言」"
+            ),
+            cfg.whisper_cpp_multilingual,
+            self.setting_group,
+        )
+
+        # 运行设备（AMD 显卡加速）
+        self.device_card = ComboBoxSettingCard(
+            cfg.whisper_cpp_device,
+            FIF.IOT,
+            self.tr("运行设备"),
+            self.tr("auto：优先独显；gpu：强制显卡；cpu：禁用显卡"),
+            ["auto", "gpu", "cpu"],
+            self.setting_group,
+        )
+
+        # GPU 序号
+        self.gpu_index_card = SpinBoxSettingCard(
+            cfg.whisper_cpp_gpu_index,
+            FIF.IOT,
+            self.tr("GPU 序号"),
+            self.tr("-1 自动选择独显；0/1/2… 指定 Vulkan 或 DirectCompute 显卡"),
+            minimum=-1,
+            maximum=15,
+            parent=self.setting_group,
+        )
+
+        # 程序路径
+        self.program_card = LineEditSettingCard(
+            cfg.whisper_cpp_program,
+            FIF.SETTING,
+            self.tr("程序路径"),
+            self.tr("留空自动探测 whisper-cli（Vulkan）或 whisper-cpp（DirectCompute）"),
+            "",
+            self.setting_group,
+        )
+
+        # 模型目录（可指向任意存放 ggml-*.bin 的目录）
+        self.model_dir_card = LineEditSettingCard(
+            cfg.whisper_cpp_model_dir,
+            FIF.FOLDER,
+            self.tr("模型目录"),
+            self.tr("可选：扫描该目录下所有 ggml-*.bin；留空只用应用自己的模型目录"),
+            "",
+            self.setting_group,
+        )
+
+        # 模型文件
+        self.model_path_card = LineEditSettingCard(
+            cfg.whisper_cpp_model_path,
+            FIF.DOCUMENT,
+            self.tr("模型文件"),
+            self.tr("可选：直接指定 .bin 模型（如 large-v3-turbo）；留空按模型名称查找"),
+            "",
             self.setting_group,
         )
 
@@ -578,15 +651,26 @@ class WhisperCppSettingWidget(QWidget):
         # 使用 addSettingCard 添加卡片到组
         self.setting_group.addSettingCard(self.model_card)
         self.setting_group.addSettingCard(self.language_card)
+        self.setting_group.addSettingCard(self.multilingual_card)
         self.setting_group.addSettingCard(self.manage_model_card)
+        self.setting_group.addSettingCard(self.device_card)
+        self.setting_group.addSettingCard(self.gpu_index_card)
+        self.setting_group.addSettingCard(self.program_card)
+        self.setting_group.addSettingCard(self.model_dir_card)
+        self.setting_group.addSettingCard(self.model_path_card)
 
         # 将设置组添加到容器布局
+        self.containerLayout.addWidget(self.engine_label)
         self.containerLayout.addWidget(self.setting_group)
         self.containerLayout.addStretch(1)
 
         # 设置组件最小宽度
         self.model_card.comboBox.setMinimumWidth(200)
         self.language_card.comboBox.setMinimumWidth(200)
+        self.device_card.comboBox.setMinimumWidth(200)
+        self.program_card.lineEdit.setMinimumWidth(280)
+        self.model_dir_card.lineEdit.setMinimumWidth(280)
+        self.model_path_card.lineEdit.setMinimumWidth(280)
 
         # 设置滚动区域
         self.scrollArea.setWidget(self.container)
@@ -597,6 +681,100 @@ class WhisperCppSettingWidget(QWidget):
 
     def setup_signals(self):
         self.manage_model_card.linkButton.clicked.connect(self.show_download_dialog)
+        self.program_card.textChanged.connect(lambda _text: self._refresh_engine_info())
+        self.model_dir_card.textChanged.connect(
+            lambda _text: self._rebuild_model_choices()
+        )
+        self.model_path_card.textChanged.connect(
+            lambda _text: self._rebuild_model_choices()
+        )
+
+    def showEvent(self, a0) -> None:
+        super().showEvent(a0)
+        self._rebuild_model_choices()
+        self._refresh_engine_info()
+
+    def _model_search_dirs(self):
+        directories = []
+        raw = cfg.whisper_cpp_model_dir.value
+        if raw:
+            custom = Path(raw).expanduser()
+            if custom.is_dir():
+                directories.append(custom)
+        default = Path(MODEL_PATH)
+        if default.is_dir():
+            directories.append(default)
+        return directories
+
+    def _collect_model_labels(self):
+        labels = set()
+        for directory in self._model_search_dirs():
+            for file in directory.glob("ggml-*.bin"):
+                stem = file.stem
+                labels.add(stem[5:] if stem.startswith("ggml-") else stem)
+
+        explicit = cfg.whisper_cpp_model_path.value
+        if explicit:
+            path = Path(explicit).expanduser()
+            if path.is_file():
+                stem = path.stem
+                labels.add(stem[5:] if stem.startswith("ggml-") else stem)
+        return labels
+
+    def _rebuild_model_choices(self):
+        combo = self.model_card.comboBox
+        labels = self._collect_model_labels()
+        current = cfg.whisper_model.value
+
+        combo.blockSignals(True)
+        combo.clear()
+        for model_enum in WhisperModelEnum:
+            if model_enum.value in labels:
+                combo.addItem(model_enum.value, userData=model_enum)
+        combo.blockSignals(False)
+
+        for index in range(combo.count()):
+            if combo.itemData(index) == current:
+                combo.setCurrentIndex(index)
+                return
+
+    def _refresh_engine_info(self):
+        """刷新引擎/后端/显卡探测结果"""
+        try:
+            backends.reset_cache()
+            engines = backends.list_engines()
+        except Exception as exc:  # noqa: BLE001
+            self.engine_label.setText(self.tr("检测失败: ") + str(exc))
+            return
+
+        if not engines:
+            self.engine_label.setText(
+                self.tr(
+                    "未检测到 whisper.cpp 程序。请把 whisper-cli.exe 放到 "
+                    "resource\\bin\\whisper-cpp-vulkan，或填写程序路径。"
+                )
+            )
+            return
+
+        lines = [f"引擎: {engine.describe()}" for engine in engines]
+
+        try:
+            adapters = backends.vulkan_adapters()
+        except Exception:  # noqa: BLE001
+            adapters = []
+        if adapters:
+            names = "、".join(f"{a.index}: {a.name}" for a in adapters)
+            lines.append(self.tr("Vulkan 显卡: ") + names)
+
+        for engine in engines:
+            if engine.flavor == "directcompute":
+                direct = backends.directcompute_adapters(engine)
+                if direct:
+                    names = "、".join(f"{i}: {n}" for i, n in enumerate(direct))
+                    lines.append(self.tr("DirectCompute 显卡: ") + names)
+                break
+
+        self.engine_label.setText("\n".join(lines))
 
     def show_download_dialog(self):
         """显示下载对话框"""

@@ -36,6 +36,10 @@ class SubtitleThread(QThread):
         self.subtitle_length = 0
         self.finished_subtitle_length = 0
         self.custom_prompt_text = ""
+        # 保存处理器实例，取消任务时才能调用它们的 stop()
+        self.splitter = None
+        self.optimizer = None
+        self.translator = None
         # 初始化数据库和服务使用管理器
         self.db_manager = DatabaseManager(CACHE_PATH)
         self.service_manager = ServiceUsageManager(self.db_manager)
@@ -59,6 +63,8 @@ class SubtitleThread(QThread):
                 )
             self.task.subtitle_config.thread_num = 5
             self.task.subtitle_config.batch_size = 10
+            # 之前 return 在 increment 之前，公益 LLM 的每日额度永远不会累加
+            self.service_manager.increment_usage("llm", self.MAX_DAILY_LLM_CALLS)
             return self.task.subtitle_config
 
         if self.task.subtitle_config.base_url and self.task.subtitle_config.api_key:
@@ -143,6 +149,7 @@ class SubtitleThread(QThread):
                     max_word_count_cjk=subtitle_config.max_word_count_cjk,
                     max_word_count_english=subtitle_config.max_word_count_english,
                 )
+                self.splitter = splitter
                 asr_data = splitter.split_subtitle(asr_data)
                 asr_data.save(save_path=split_path)
                 self.update_all.emit(asr_data.to_json())
@@ -162,6 +169,7 @@ class SubtitleThread(QThread):
                     thread_num=subtitle_config.thread_num,
                     update_callback=self.callback,
                 )
+                self.optimizer = optimizer
                 asr_data = optimizer.optimize_subtitle(asr_data)
                 self.update_all.emit(asr_data.to_json())
 
@@ -187,6 +195,7 @@ class SubtitleThread(QThread):
                     is_reflect=subtitle_config.need_reflect,
                     update_callback=self.callback,
                 )
+                self.translator = translator
                 asr_data = translator.translate_subtitle(asr_data)
                 # 移除末尾标点符号
                 if subtitle_config.need_remove_punctuation:
@@ -235,10 +244,8 @@ class SubtitleThread(QThread):
                 # )
             else:
                 # 删除断句文件（对于仅字幕任务）
-                split_path = str(
-                    Path(self.task.subtitle_path).parent
-                    / f"【智能断句】{Path(self.task.subtitle_path).stem}.srt"
-                )
+                # 断句结果写在 run() 开头的 split_path，这里必须删同一个文件，
+                # 原来拼的是【智能断句】，导致中间文件永远残留。
                 if os.path.exists(split_path):
                     os.remove(split_path)
 
@@ -262,20 +269,22 @@ class SubtitleThread(QThread):
     def stop(self):
         """停止所有处理"""
         try:
-            # 先停止优化器
-            if hasattr(self, "optimizer"):
+            # 先停止各个处理器的线程池，避免 terminate 后仍有请求在跑
+            for name in ("splitter", "optimizer", "translator"):
+                component = getattr(self, name, None)
+                if component is None:
+                    continue
                 try:
-                    self.optimizer.stop()
-                except Exception as e:
-                    logger.error(f"停止优化器时出错：{str(e)}")
+                    component.stop()
+                except Exception as e:  # noqa: BLE001
+                    logger.error("停止 %s 时出错：%s", name, e)
 
-            # 终止线程
-            self.terminate()
-            # 等待最多3秒
-            if not self.wait(3000):
-                logger.warning("线程未能在3秒内正常停止")
+            # 给线程池收尾留时间；直接 terminate 会把进程卡死
+            if not self.wait(5000):
+                logger.warning("线程未能在5秒内正常停止，强制终止")
+                self.terminate()
+                self.wait(3000)
 
-            # 发送进度信号
             self.progress.emit(100, self.tr("已终止"))
 
         except Exception as e:

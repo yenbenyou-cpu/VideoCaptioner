@@ -31,11 +31,18 @@ MODEL_PATH = APPDATA_PATH / "models"
 
 FASER_WHISPER_PATH = BIN_PATH / "Faster-Whisper-XXL"
 
+# Vulkan 版 whisper.cpp（A 卡加速）放在单独目录，避免 whisper.dll 与
+# DirectCompute 版 Whisper.dll 冲突
+WHISPER_VULKAN_PATH = BIN_PATH / "whisper-cpp-vulkan"
+BUNDLED_BIN_PATH = BIN_PATH
+BUNDLED_WHISPER_VULKAN_PATH = WHISPER_VULKAN_PATH
+
 # 日志配置
 LOG_LEVEL = logging.INFO
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # 环境变量添加 bin 路径，添加到PATH开头以优先使用
+os.environ["PATH"] = str(WHISPER_VULKAN_PATH) + os.pathsep + os.environ["PATH"]
 os.environ["PATH"] = str(BIN_PATH) + os.pathsep + os.environ["PATH"]
 os.environ["PATH"] = str(FASER_WHISPER_PATH) + os.pathsep + os.environ["PATH"]
 
